@@ -7,7 +7,8 @@ for dependency in ['PySide6-Essentials', 'shiboken6', 'Pillow', 'httpx', 'httpco
                    'anyio', 'h11', 'idna', 'certifi', 'winrt-runtime',
                    'winrt-Windows.Media.Ocr', 'winrt-Windows.Graphics.Imaging',
                    'winrt-Windows.Globalization', 'winrt-Windows.Storage.Streams',
-                   'winrt-Windows.Foundation', 'winrt-Windows.Foundation.Collections']:
+                   'winrt-Windows.Foundation', 'winrt-Windows.Foundation.Collections',
+                   'windows-capture', 'numpy', 'opencv-python']:
     metadata += copy_metadata(dependency)
 a = Analysis(['main.py'], pathex=[], binaries=binaries,
              datas=[('README.md', '.'), ('THIRD_PARTY_NOTICES.md', '.'),

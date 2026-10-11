@@ -170,6 +170,8 @@ class WordPopup(QWidget):
         self.translation_busy = False
         self.definition = None
         self.term = self.context = self.ai_text = self.translation_text = self.lookup_text = ""
+        self.source_start = -1
+        self.translation_highlight = None
         self.mode = "dictionary"
         self.drag_offset = None
         self.pointer_top = False
@@ -379,6 +381,8 @@ class WordPopup(QWidget):
         self.definition = None
         self.ai_complete = False
         self.term = self.context = self.ai_text = self.lookup_text = self.translation_text = ""
+        self.source_start = -1
+        self.translation_highlight = None
         self.word.setText("查词")
         self.home_row.show()
         self.translation_section.hide()
@@ -395,10 +399,12 @@ class WordPopup(QWidget):
         self.position_card()
         self.move(48, 90)
 
-    def set_definition(self, definition, context, point, record_id, show=True):
+    def set_definition(self, definition, context, point, record_id, show=True, source_start=-1):
         self.definition = definition
         self.term, self.context = definition.term, context
+        self.source_start = source_start
         self.ai_text = self.lookup_text = self.translation_text = ""
+        self.translation_highlight = None
         self.ai_complete = False
         self.followup_open = False
         self.translation_busy = False
@@ -498,8 +504,7 @@ class WordPopup(QWidget):
         self.ai_text = text
         self.ai_complete = complete
         if self.mode == "translate":
-            self.translation_text = text
-            self.translation_body.setPlainText(text)
+            self.set_translation_text(text)
             self.translation_body.show()
             self.resize_browser(self.translation_body, 35, 200)
         else:
@@ -514,11 +519,42 @@ class WordPopup(QWidget):
         self.position_card()
 
     def restore_translation(self, text):
-        self.translation_text = text
-        self.translation_body.setPlainText(text)
+        self.set_translation_text(text)
         self.translation_body.setVisible(bool(text))
         self.resize_browser(self.translation_body, 35, 200)
         self.position_card()
+
+    def set_translation_text(self, text):
+        if not self.translation_text or not text.startswith(self.translation_text):
+            self.translation_highlight = None
+        self.translation_text = text
+        self.translation_body.setPlainText(text)
+        self.apply_translation_highlight()
+
+    def highlight_translation(self, start, end):
+        self.translation_highlight = (start, end) if 0 <= start < end <= len(self.translation_text) else None
+        cursor = QTextCursor(self.translation_body.document())
+        cursor.select(QTextCursor.SelectionType.Document)
+        clear = QTextCharFormat()
+        clear.setBackground(QColor("transparent"))
+        clear.setForeground(QColor("#f1f1f1"))
+        cursor.mergeCharFormat(clear)
+        self.apply_translation_highlight()
+
+    def apply_translation_highlight(self):
+        if self.translation_highlight is None:
+            return
+        start, end = self.translation_highlight
+        # QTextCursor offsets count UTF-16 code units, rather than Python chars.
+        start = len(self.translation_text[:start].encode("utf-16-le")) // 2
+        end = len(self.translation_text[:end].encode("utf-16-le")) // 2
+        cursor = QTextCursor(self.translation_body.document())
+        cursor.setPosition(start)
+        cursor.setPosition(end, QTextCursor.KeepAnchor)
+        mark = QTextCharFormat()
+        mark.setBackground(QColor("#999822"))
+        mark.setForeground(QColor("#ffffff"))
+        cursor.mergeCharFormat(mark)
 
     def explain(self):
         if self.ai_text and not self.busy and self.followup_button.isEnabled():

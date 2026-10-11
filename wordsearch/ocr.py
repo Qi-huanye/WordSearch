@@ -4,9 +4,10 @@ import re
 from dataclasses import dataclass
 from statistics import median
 
-from PIL import Image, ImageGrab, ImageOps
+from PIL import Image, ImageOps
 
 from .native import monitor_at
+from .capture import grab
 
 
 @dataclass
@@ -25,6 +26,7 @@ class Recognition:
     words: list
     region: tuple
     boxes: tuple = ()
+    source_start: int = -1
 
 
 CHOICE_START = re.compile(r"^\s*(?:\d{1,2}|[Il])\s*[.)]\s*[-—–]?")
@@ -75,7 +77,7 @@ def paragraphs(rows):
     return blocks
 
 
-def selected_context(rows, selected_words, expand):
+def selected_context(rows, selected_words, expand, with_offset=False):
     selected_ids = {word["line"] for word in selected_words}
     if expand:
         focus = next(row for row in rows if row["ids"] & selected_ids)
@@ -84,16 +86,29 @@ def selected_context(rows, selected_words, expand):
                 min(row["right"], focus["right"]) - max(row["left"], focus["left"]) > 20]
     selected_keys = {id(word) for word in selected_words}
     texts = []
+    source_start = -1
     for block in paragraphs(rows):
         if not any(row["ids"] & selected_ids for row in block):
             continue
-        parts = [row["text"] if expand else " ".join(word["text"] for word in row["words"]
-                 if id(word) in selected_keys) for row in block]
+        parts = []
+        for row in block:
+            row_words = row["words"] if expand else [word for word in row["words"] if id(word) in selected_keys]
+            if not row_words:
+                continue
+            if source_start < 0:
+                for index, word in enumerate(row_words):
+                    if id(word) in selected_keys:
+                        source_start = (sum(len(text) + 2 for text in texts)
+                                        + sum(len(part) + 1 for part in parts)
+                                        + sum(len(item["text"]) + 1 for item in row_words[:index]))
+                        break
+            parts.append(" ".join(word["text"] for word in row_words))
         texts.append(" ".join(part for part in parts if part))
-    return "\n\n".join(texts)
+    context = "\n\n".join(texts)
+    return (context, source_start) if with_offset else context
 
 
-def capture_near(pointer, settings):
+def capture_near(pointer, settings, window=None):
     x, y = pointer
     info = monitor_at(x, y)
     m = info.monitor
@@ -107,11 +122,11 @@ def capture_near(pointer, settings):
         top = max(m.top, min(y - height // 2, m.bottom - height))
     right, bottom = min(left + width, m.right), min(top + height, m.bottom)
     left, top = max(left, m.left), max(top, m.top)
-    image = ImageGrab.grab(bbox=(left, top, right, bottom), all_screens=True)
+    image = grab((left, top, right, bottom), window)
     return Capture(image, (left, top), (x - left, y - top), fixed_context=fixed_context)
 
 
-def capture_region(region, settings):
+def capture_region(region, settings, window=None):
     sx, sy, sw, sh = region
     monitor = monitor_at(sx + sw // 2, sy + sh // 2).monitor
     fixed_context = bool(settings.region and settings.region[0] <= sx and settings.region[1] <= sy
@@ -122,7 +137,7 @@ def capture_region(region, settings):
         left, top = max(monitor.left, sx - 300), max(monitor.top, sy - 180)
         right, bottom = min(monitor.right, sx + sw + 300), min(monitor.bottom, sy + sh + 180)
         width, height = right - left, bottom - top
-    return Capture(ImageGrab.grab(bbox=(left, top, left + width, top + height), all_screens=True),
+    return Capture(grab((left, top, left + width, top + height), window),
                    (left, top), None, (sx - left, sy - top, sw, sh), fixed_context=fixed_context)
 
 
@@ -179,7 +194,7 @@ async def _recognize(capture):
             raise RuntimeError("选框内没有识别到英文，请重新框选或手动输入。")
         selected_text = selected_context(rows, selected_words, expand=False)
         term = selected_text.strip(' \n.,!?;:\"“”()[]{}—–') if len(selected_words) <= 8 else ""
-        context = selected_context(rows, selected_words, expand=True) if term else selected_text
+        context, source_start = selected_context(rows, selected_words, expand=True, with_offset=True) if term else (selected_text, -1)
     else:
         px, py = capture.pointer
 
@@ -193,11 +208,13 @@ async def _recognize(capture):
         if distance(selected) > 55:
             raise RuntimeError("鼠标附近没有找到单词，请把鼠标移到字母上重试，或框选文字。")
         term = selected["text"].strip('.,!?;:\"“”()[]{}—–')
-        context = selected_context(rows, selected_words, expand=True)
+        context, source_start = selected_context(rows, selected_words, expand=True, with_offset=True)
+    if term and source_start >= 0:
+        source_start += len(selected_words[0]["text"]) - len(selected_words[0]["text"].lstrip(' \n.,!?;:\"“”()[]{}—–'))
     width, height = capture.image.size
     boxes = tuple((capture.origin[0] + w["x"], capture.origin[1] + w["y"], w["w"], w["h"])
                   for w in selected_words)
-    return Recognition(term, context, words, (*capture.origin, width, height), boxes)
+    return Recognition(term, context, words, (*capture.origin, width, height), boxes, source_start)
 
 
 def recognize(capture):

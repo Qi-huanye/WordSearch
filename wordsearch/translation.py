@@ -3,12 +3,15 @@
 import hashlib
 import logging
 import re
+import time
 from collections import OrderedDict
 from copy import deepcopy
 
 from PySide6.QtCore import QObject, Signal
 
-from .ai import AiClient, Cancelled, endpoint, headers, messages_for
+from .ai import AiClient, Cancelled, endpoint, headers
+from .alignment import TranslationAligner
+from .marked_translation import combined_messages, marked_translation
 
 
 def normalized_context(context):
@@ -30,6 +33,7 @@ class ContextTranslator(QObject):
         self.generation = 0
         self.current_key = None
         self.context = self.output = ""
+        self.aligner = TranslationAligner(jobs, self)
 
     def key(self, context, profile, game=""):
         return (profile.id, profile.base_url.strip(), profile.model.strip(),
@@ -42,15 +46,27 @@ class ContextTranslator(QObject):
         while len(self.cache) > 64:
             self.cache.popitem(last=False)
 
+    def remember_marked(self, context, profile, text, term, source_start, span, game=""):
+        self.remember(context, profile, text, game)
+        if term.strip():
+            self.aligner.remember(self.key(context, profile, game), term, source_start, text, span)
+
     def cancel(self, announce=False):
         self.generation += 1
+        self.aligner.cancel()
         if self.client:
             self.client.cancel()
             self.changed.emit(self.context, "已停止翻译" if announce else "", False)
         self.client = None
         self.current_key = None
 
-    def request(self, context, profile, enabled=True, game=""):
+    def align(self, term, context, profile, game="", enabled=True, source_start=-1):
+        key = self.key(context, profile, game)
+        translation = self.cache.get(key)
+        if translation and term.strip():
+            self.aligner.request(key, term, context, translation, profile, game, enabled, source_start)
+
+    def request(self, context, profile, enabled=True, game="", term="", source_start=-1):
         key = self.key(context, profile, game)
         if not normalized_context(context):
             self.cancel()
@@ -82,22 +98,30 @@ class ContextTranslator(QObject):
         token = self.generation
         self.current_key, self.context, self.output = key, context, ""
         client = self.client = AiClient()
+        raw = ""
+        started = time.monotonic()
         self.changed.emit(context, "翻译中…", True)
-        logging.info("Automatic context translation started")
+        logging.info("Automatic context translation started; combined=%s", bool(term.strip()))
 
         def chunk(text):
+            nonlocal raw
             if token == self.generation:
-                self.output += text
+                raw += text
+                self.output, span = marked_translation(raw)
                 self.changed.emit(context, self.output, True)
+                if span:
+                    self.aligner.changed.emit(context, self.output, term, source_start, *span)
 
         def done(answer):
             if token != self.generation:
                 return
             self.client = None
-            self.remember(context, profile, answer, game)
-            self.store.add("", context, answer, profile, "translate", game)
-            self.changed.emit(context, answer, False)
-            logging.info("Automatic context translation completed")
+            text, span = marked_translation(answer, final=True)
+            self.remember_marked(context, profile, text, term, source_start, span, game)
+            self.store.add("", context, text, profile, "translate", game)
+            self.changed.emit(context, text, False)
+            logging.info("Automatic context translation completed; combined=%s matched=%s elapsed_ms=%d",
+                         bool(term.strip()), span is not None, round((time.monotonic() - started) * 1000))
 
         def error(exc):
             if token != self.generation:
@@ -109,5 +133,5 @@ class ContextTranslator(QObject):
                 text = str(exc) if isinstance(exc, (ValueError, RuntimeError)) else "翻译失败，请重试"
             self.changed.emit(context, text, False)
 
-        self.jobs.start(lambda emit: client.complete(profile, messages_for("", context, "translate", game), emit),
+        self.jobs.start(lambda emit: client.complete(profile, combined_messages(term, context, game, source_start), emit),
                         done, error, chunk)

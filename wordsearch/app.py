@@ -12,7 +12,7 @@ from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 from .ai import AiClient, Cancelled, endpoint, messages_for, system_prompt
-from .native import cursor_position, enable_dpi, foreground_game, parse_hotkey, park_cursor, restore_cursor, user32
+from .native import cursor_position, enable_dpi, foreground_game, game_window, parse_hotkey, qt_to_physical, user32
 from .ocr import capture_near, capture_region, recognize
 from .storage import DATA_DIR, Profile, Store
 from .ui import MainWindow, SelectionOverlay, STYLE, app_icon
@@ -20,6 +20,9 @@ from .dictionary import Dictionary
 from .popup import WordHighlight, WordPopup
 from .speech import Speaker
 from .translation import ContextTranslator, normalized_context
+from .mouse import MouseObserver
+from .marked_translation import combined_messages, marked_translation
+from . import __version__
 
 
 class Jobs(QObject):
@@ -123,6 +126,7 @@ class Controller(QObject):
         self.popup = WordPopup(self.settings)
         self.translator = ContextTranslator(self.jobs, self.store, self)
         self.translator.changed.connect(self.render_translation)
+        self.translator.aligner.changed.connect(self.render_alignment)
         self.highlight = WordHighlight()
         self.highlight_boxes = ()
         self.speaker = Speaker(self)
@@ -140,7 +144,6 @@ class Controller(QObject):
         self.history_card = False
         self.completed_translation_key = None
         self.lookup_pointer = self.hover_point
-        self.capture_parking = None
         self.ai_client = None
         self.generation = 0
         self.ocr_generation = 0
@@ -181,6 +184,9 @@ class Controller(QObject):
         self.popup.favorite_requested.connect(self.favorite_word)
         self.popup.dictionary_requested.connect(self.restore_dictionary)
         self.popup.dismissed.connect(self.dismiss_popup)
+        self.mouse = MouseObserver(self)
+        self.mouse.clicked.connect(self.outside_click)
+        application.aboutToQuit.connect(self.mouse.close)
         self.hover_timer = QTimer(self)
         self.hover_timer.setInterval(120)
         self.hover_timer.timeout.connect(self.hover_tick)
@@ -207,7 +213,7 @@ class Controller(QObject):
             self.window.set_status(str(exc))
         if self.store.notice:
             self.window.set_status(self.store.notice)
-        logging.info("WordSearch 1.4.0 started; OCR and dictionary run locally")
+        logging.info("WordSearch %s started; OCR and dictionary run locally", __version__)
 
     def render_translation(self, context, text, busy):
         if normalized_context(context) != normalized_context(self.popup.context):
@@ -216,6 +222,16 @@ class Controller(QObject):
             self.completed_translation_key = None
             self.popup.restore_translation(text)
         self.popup.set_translation_busy(busy)
+        if text and not busy:
+            self.translator.align(self.popup.term, context, self.settings.profile,
+                                  self.popup.game_name, self.settings.auto_translate, self.popup.source_start)
+
+    def render_alignment(self, context, translation, term, source_start, start, end):
+        if (normalized_context(context) == normalized_context(self.popup.context)
+                and term.casefold().strip() == self.popup.term.casefold().strip()
+                and source_start == self.popup.source_start
+                and self.popup.translation_text.startswith(translation)):
+            self.popup.highlight_translation(start, end)
 
     def show(self):
         if self.card_dirty:
@@ -230,7 +246,8 @@ class Controller(QObject):
         completed_translation = (self.popup.ai_complete
                                  and self.completed_translation_key == self.translator.key(self.popup.context, self.settings.profile, self.popup.game_name))
         if not self.history_card and not completed_translation and not (self.window.busy and self.query_mode == "translate"):
-            self.translator.request(self.popup.context, self.settings.profile, self.settings.auto_translate, self.popup.game_name)
+            self.translator.request(self.popup.context, self.settings.profile, self.settings.auto_translate,
+                                    self.popup.game_name, self.popup.term, self.popup.source_start)
 
     def show_editor(self):
         self.popup.hide()
@@ -265,6 +282,17 @@ class Controller(QObject):
         self.capturing = False
         self.hover_triggered = cursor_position()
         self.stop(announce=False)
+
+    @Slot(int, int)
+    def outside_click(self, x, y):
+        if not self.popup.isVisible() or QApplication.activePopupWidget() is not None:
+            return
+        screen = self.popup.screen()
+        frame = self.popup.frameGeometry()
+        left, top = qt_to_physical(frame.topLeft(), screen)
+        ratio = screen.devicePixelRatio()
+        if not (left <= x < left + frame.width() * ratio and top <= y < top + frame.height() * ratio):
+            self.popup.dismiss()
 
     def hover_tick(self):
         if self.capturing:
@@ -302,7 +330,7 @@ class Controller(QObject):
 
     def hover_position_matches(self):
         point = cursor_position()
-        return point == self.capture_parking or abs(point[0] - self.lookup_pointer[0]) + abs(point[1] - self.lookup_pointer[1]) <= 18
+        return abs(point[0] - self.lookup_pointer[0]) + abs(point[1] - self.lookup_pointer[1]) <= 18
 
     def sync_history(self, row):
         self.translator.cancel()
@@ -341,7 +369,8 @@ class Controller(QObject):
         self.messages = []
         translation = self.popup.translation_text
         source = self.popup.game_name
-        self.present_definition(self.window.term.text().strip(), self.window.context.toPlainText(), source)
+        source_start = self.popup.source_start
+        self.present_definition(self.window.term.text().strip(), self.window.context.toPlainText(), source, source_start)
         if translation:
             self.popup.restore_translation(translation)
         self.window.followup_button.setEnabled(False)
@@ -382,6 +411,7 @@ class Controller(QObject):
         return self.ocr_generation
 
     def lookup(self, auto=False):
+        window = game_window()
         self.capture_source = "Disco Elysium" if foreground_game() else ""
         self.stop(announce=False)
         self.highlight_boxes = ()
@@ -397,25 +427,20 @@ class Controller(QObject):
         self.capturing = True
         self.window.hide()
         self.popup.hide()
-        parking = park_cursor(pointer)
-        self.capture_parking = parking
         self.window.set_status("正在本地识别单词与上下文…")
 
         def capture():
             if token != self.ocr_generation:
-                restore_cursor(pointer, parking)
                 return
             try:
-                image = capture_near(pointer, self.settings)
-                restore_cursor(pointer, parking)
-                self.run_ocr(image, token)
+                self.run_capture(lambda: capture_near(pointer, self.settings, window), token)
             except Exception as exc:
-                restore_cursor(pointer, parking)
                 self.ocr_error(exc, token)
 
         QTimer.singleShot(160, capture)
 
     def select(self, fixed_region=False):
+        self.capture_window = game_window()
         self.capture_source = "Disco Elysium" if foreground_game() else ""
         self.stop(announce=False)
         self.highlight_boxes = ()
@@ -448,26 +473,30 @@ class Controller(QObject):
             self.hover_point = pointer
             self.hover_triggered = pointer
             self.hover_since = time.monotonic()
-            parking = park_cursor(pointer)
 
             def capture():
                 if token != self.ocr_generation:
-                    restore_cursor(pointer, parking)
                     return
                 try:
-                    image = capture_region(region, self.settings)
-                    restore_cursor(pointer, parking)
-                    self.run_ocr(image, token)
+                    window = self.capture_window
+                    self.run_capture(lambda: capture_region(region, self.settings, window), token)
                 except Exception as exc:
-                    restore_cursor(pointer, parking)
                     self.ocr_error(exc, token)
 
             QTimer.singleShot(200, capture)
 
-    def run_ocr(self, image, token):
-        self.window.set_capture(image.image)
-        self.jobs.start(lambda emit: recognize(image), lambda result: self.ocr_done(result, token),
-                        lambda error: self.ocr_error(error, token))
+    def run_capture(self, capture, token):
+        def run(emit):
+            image = capture()
+            return image, recognize(image)
+
+        def done(result):
+            if token == self.ocr_generation:
+                image, recognition = result
+                self.window.set_capture(image.image)
+                self.ocr_done(recognition, token)
+
+        self.jobs.start(run, done, lambda error: self.ocr_error(error, token))
 
     def ocr_done(self, result, token):
         if token != self.ocr_generation:
@@ -483,7 +512,7 @@ class Controller(QObject):
         self.window.favorite_button.setEnabled(False)
         self.window.followup_button.setEnabled(False)
         self.messages = []
-        self.present_definition(result.term, result.context, self.capture_source)
+        self.present_definition(result.term, result.context, self.capture_source, result.source_start)
         self.highlight_boxes = result.boxes
         if foreground_game():
             self.highlight.set_boxes(self.highlight_boxes)
@@ -493,7 +522,7 @@ class Controller(QObject):
         if self.settings.auto_query and configured and not self.lookup_auto:
             self.query("lookup" if result.term else "translate")
 
-    def present_definition(self, term, context, source=""):
+    def present_definition(self, term, context, source="", source_start=-1):
         self.card_dirty = False
         self.history_card = False
         self.completed_translation_key = None
@@ -513,10 +542,10 @@ class Controller(QObject):
         self.window.favorite_button.setText("★ 已收藏" if self.window.record_favorite else "☆ 收藏")
         self.window.set_status("")
         self.window.followup_row.hide()
-        self.popup.set_definition(definition, context, self.lookup_point, self.window.record_id)
+        self.popup.set_definition(definition, context, self.lookup_point, self.window.record_id, source_start=source_start)
         self.popup.set_game_source(source)
         self.popup.set_favorite(self.window.record_favorite)
-        self.translator.request(context, self.settings.profile, self.settings.auto_translate, source)
+        self.translator.request(context, self.settings.profile, self.settings.auto_translate, source, term, source_start)
 
     def ocr_error(self, error, token):
         if token != self.ocr_generation:
@@ -568,7 +597,9 @@ class Controller(QObject):
         if mode == "translate" and not context:
             self.window.set_status("请先识别或粘贴一段对白。")
             return
-        self.messages = messages_for(term, context, mode, self.popup.game_name)
+        source_start = self.popup.source_start if (self.popup.term, self.popup.context) == (term, context) else -1
+        self.messages = (combined_messages(term, context, self.popup.game_name, source_start) if mode == "translate"
+                         else messages_for(term, context, mode, self.popup.game_name))
         self.query_mode = mode
         self.base_output = ""
         self.window.record_id = None
@@ -586,7 +617,8 @@ class Controller(QObject):
             return
         self.messages[0] = {"role": "system", "content": system_prompt("followup", self.popup.game_name, self.popup.context)}
         self.messages.append({"role": "user", "content": text})
-        self.base_output = self.window.answer.toPlainText() + "\n\n---\n\n追问：" + text + "\n\n"
+        previous = self.popup.translation_text if self.query_mode == "translate" else self.window.answer.toPlainText()
+        self.base_output = previous + "\n\n---\n\n追问：" + text + "\n\n"
         self.window.followup.clear()
         self.begin_query(self.window.term.text().strip(), self.window.context.toPlainText().strip(), deepcopy(self.settings.profile))
 
@@ -626,12 +658,22 @@ class Controller(QObject):
         self.popup.set_busy(True)
         self.window.set_status("")
         messages = deepcopy(self.messages)
+        combined = self.query_mode == "translate" and not self.base_output
+        source_start = self.popup.source_start
+        raw = ""
+        started = time.monotonic()
+        if combined:
+            logging.info("Manual context translation started; combined=%s", bool(term))
 
         def chunk(text):
+            nonlocal raw
             if token == self.generation:
-                self.output += text
+                raw += text
+                self.output, span = marked_translation(raw) if combined else (raw, None)
                 self.window.answer.setMarkdown(self.base_output + self.output)
                 self.popup.set_ai(self.base_output + self.output, mode=self.query_mode)
+                if span:
+                    self.popup.highlight_translation(*span)
                 scrollbar = self.window.answer.verticalScrollBar()
                 if scrollbar.maximum() - scrollbar.value() < 160:
                     scrollbar.setValue(scrollbar.maximum())
@@ -639,14 +681,19 @@ class Controller(QObject):
         def done(answer):
             if token != self.generation:
                 return
+            if combined:
+                answer, span = marked_translation(answer, final=True)
+                self.translator.remember_marked(context, profile, answer, term, source_start, span, source)
+                logging.info("Manual context translation completed; combined=%s matched=%s elapsed_ms=%d",
+                             bool(term), span is not None, round((time.monotonic() - started) * 1000))
             self.messages.append({"role": "assistant", "content": answer})
             output = self.base_output + answer
             self.window.answer.setMarkdown(output)
             self.popup.set_ai(output, complete=True, mode=self.query_mode)
             if self.query_mode == "translate":
                 self.completed_translation_key = self.translator.key(context, profile, source)
-            if self.query_mode == "translate" and not self.base_output:
-                self.translator.remember(context, profile, answer, source)
+            if self.query_mode == "translate":
+                self.translator.align(term, context, profile, source, source_start=source_start)
             self.window.record_id = self.store.add(term, context, output, profile, self.query_mode, source)
             self.last_record_id = self.window.record_id
             self.last_query = (term, context)
@@ -684,7 +731,8 @@ class Controller(QObject):
         self.window.draft.selected_id = identifier
         self.window.set_status("")
         if self.popup.isVisible():
-            self.translator.request(self.popup.context, self.settings.profile, self.settings.auto_translate, self.popup.game_name)
+            self.translator.request(self.popup.context, self.settings.profile, self.settings.auto_translate,
+                                    self.popup.game_name, self.popup.term, self.popup.source_start)
 
     def save_settings(self, settings):
         previous = self.settings

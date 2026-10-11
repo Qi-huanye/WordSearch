@@ -1,5 +1,6 @@
 PySide6-Essentials==6.10.2
 Pillow>=11.0
+windows-capture==2.0.1
 httpx>=0.28
 pywin32==312
 winrt-runtime==3.2.1

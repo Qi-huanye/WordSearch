@@ -5,6 +5,9 @@
 - Python：https://www.python.org/ — Python Software Foundation License。
 - Qt / PySide6 Essentials：https://www.qt.io/qt-for-python — LGPLv3 / GPLv3；本工具动态链接 Qt，不修改 Qt 源码。对应源码与许可：https://code.qt.io/ 与 https://doc.qt.io/qtforpython-6/licenses.html。
 - Pillow：https://python-pillow.org/ — HPND。
+- Windows Capture：https://github.com/NiiightmareXD/windows-capture — MIT。
+- NumPy：https://numpy.org/ — BSD-3-Clause。
+- OpenCV：https://opencv.org/ — Apache-2.0。
 - HTTPX：https://www.python-httpx.org/ — BSD-3-Clause。
 - PyWinRT：https://github.com/pywinrt/pywinrt — MIT。
 - pywin32：https://github.com/mhammond/pywin32 — Python Software Foundation License。

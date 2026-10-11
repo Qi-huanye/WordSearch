@@ -6,6 +6,7 @@ from ctypes import wintypes
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+dwmapi = ctypes.WinDLL("dwmapi", use_last_error=True)
 
 
 class Blob(ctypes.Structure):
@@ -17,35 +18,17 @@ class MonitorInfo(ctypes.Structure):
                 ("work", wintypes.RECT), ("flags", wintypes.DWORD), ("device", wintypes.WCHAR * 32)]
 
 
-class MouseInput(ctypes.Structure):
-    _fields_ = [("dx", wintypes.LONG), ("dy", wintypes.LONG), ("data", wintypes.DWORD),
-                ("flags", wintypes.DWORD), ("time", wintypes.DWORD), ("extra", ctypes.c_size_t)]
-
-
-class KeyboardInput(ctypes.Structure):
-    _fields_ = [("vk", wintypes.WORD), ("scan", wintypes.WORD), ("flags", wintypes.DWORD),
-                ("time", wintypes.DWORD), ("extra", ctypes.c_size_t)]
-
-
-class InputUnion(ctypes.Union):
-    _fields_ = [("mouse", MouseInput), ("keyboard", KeyboardInput)]
-
-
-class Input(ctypes.Structure):
-    _fields_ = [("type", wintypes.DWORD), ("value", InputUnion)]
-
-
 user32.GetCursorPos.argtypes = [ctypes.POINTER(wintypes.POINT)]
 user32.GetForegroundWindow.restype = wintypes.HWND
 user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
-user32.SetCursorPos.argtypes = [ctypes.c_int, ctypes.c_int]
-user32.SendInput.argtypes = [wintypes.UINT, ctypes.POINTER(Input), ctypes.c_int]
 user32.MonitorFromPoint.argtypes = [wintypes.POINT, wintypes.DWORD]
 user32.MonitorFromPoint.restype = wintypes.HANDLE
 user32.GetMonitorInfoW.argtypes = [wintypes.HANDLE, ctypes.POINTER(MonitorInfo)]
 user32.RegisterHotKey.argtypes = [wintypes.HWND, ctypes.c_int, wintypes.UINT, wintypes.UINT]
 user32.UnregisterHotKey.argtypes = [wintypes.HWND, ctypes.c_int]
 user32.SetWindowDisplayAffinity.argtypes = [wintypes.HWND, wintypes.DWORD]
+user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+dwmapi.DwmGetWindowAttribute.argtypes = [wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD]
 kernel32.LocalFree.argtypes = [wintypes.HLOCAL]
 kernel32.LocalFree.restype = wintypes.HLOCAL
 crypt32.CryptProtectData.argtypes = [ctypes.POINTER(Blob), wintypes.LPCWSTR, ctypes.c_void_p,
@@ -69,30 +52,22 @@ def cursor_position():
 
 
 def foreground_game():
+    return bool(game_window())
+
+
+def game_window():
+    window = user32.GetForegroundWindow()
     title = ctypes.create_unicode_buffer(512)
-    user32.GetWindowTextW(user32.GetForegroundWindow(), title, len(title))
-    return "disco elysium" in title.value.lower()
+    user32.GetWindowTextW(window, title, len(title))
+    return window if "disco elysium" in title.value.lower() else None
 
 
-def park_cursor(pointer):
-    info = monitor_at(*pointer)
-    parking = (info.monitor.left + 8, info.monitor.top + 8)
-    move_cursor(*parking)
-    return parking
-
-
-def restore_cursor(pointer, parking):
-    # Do not pull the mouse back if the player moved it while capturing.
-    if cursor_position() == parking:
-        move_cursor(*pointer)
-
-
-def move_cursor(x, y):
-    left, top = user32.GetSystemMetrics(76), user32.GetSystemMetrics(77)
-    width, height = user32.GetSystemMetrics(78), user32.GetSystemMetrics(79)
-    event = Input(0, InputUnion(mouse=MouseInput(round((x - left) * 65535 / (width - 1)),
-                  round((y - top) * 65535 / (height - 1)), 0, 0xC001, 0, 0)))
-    user32.SendInput(1, ctypes.byref(event), ctypes.sizeof(Input))
+def window_capture_bounds(window):
+    rect = wintypes.RECT()
+    if dwmapi.DwmGetWindowAttribute(window, 9, ctypes.byref(rect), ctypes.sizeof(rect)) != 0:
+        if not user32.GetWindowRect(window, ctypes.byref(rect)):
+            raise ctypes.WinError(ctypes.get_last_error())
+    return rect.left, rect.top, rect.right, rect.bottom
 
 
 def monitor_at(x, y):
