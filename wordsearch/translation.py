@@ -15,7 +15,8 @@ def normalized_context(context):
     # OCR sometimes drops the isolated dash between the speaker and dialogue.
     # Preserve punctuation inside words and the original text sent to the API.
     context = re.sub(r"(?<!\S)[—–-](?!\S)", "", context)
-    return re.sub(r"\s+", " ", context).strip()
+    return "\n\n".join(re.sub(r"\s+", " ", paragraph).strip()
+                       for paragraph in re.split(r"\n\s*\n", context.strip()))
 
 
 class ContextTranslator(QObject):
@@ -30,12 +31,12 @@ class ContextTranslator(QObject):
         self.current_key = None
         self.context = self.output = ""
 
-    def key(self, context, profile):
+    def key(self, context, profile, game=""):
         return (profile.id, profile.base_url.strip(), profile.model.strip(),
-                hashlib.sha256(profile.key.encode()).digest(), normalized_context(context))
+                hashlib.sha256(profile.key.encode()).digest(), game, normalized_context(context))
 
-    def remember(self, context, profile, text):
-        key = self.key(context, profile)
+    def remember(self, context, profile, text, game=""):
+        key = self.key(context, profile, game)
         self.cache[key] = text
         self.cache.move_to_end(key)
         while len(self.cache) > 64:
@@ -49,8 +50,8 @@ class ContextTranslator(QObject):
         self.client = None
         self.current_key = None
 
-    def request(self, context, profile, enabled=True):
-        key = self.key(context, profile)
+    def request(self, context, profile, enabled=True, game=""):
+        key = self.key(context, profile, game)
         if not normalized_context(context):
             self.cancel()
             return
@@ -93,8 +94,8 @@ class ContextTranslator(QObject):
             if token != self.generation:
                 return
             self.client = None
-            self.remember(context, profile, answer)
-            self.store.add("", context, answer, profile, "translate")
+            self.remember(context, profile, answer, game)
+            self.store.add("", context, answer, profile, "translate", game)
             self.changed.emit(context, answer, False)
             logging.info("Automatic context translation completed")
 
@@ -108,5 +109,5 @@ class ContextTranslator(QObject):
                 text = str(exc) if isinstance(exc, (ValueError, RuntimeError)) else "翻译失败，请重试"
             self.changed.emit(context, text, False)
 
-        self.jobs.start(lambda emit: client.complete(profile, messages_for("", context, "translate"), emit),
+        self.jobs.start(lambda emit: client.complete(profile, messages_for("", context, "translate", game), emit),
                         done, error, chunk)

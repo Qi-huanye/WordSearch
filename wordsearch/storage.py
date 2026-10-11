@@ -54,6 +54,8 @@ class Store:
         if "mode" not in {row["name"] for row in self.db.execute("PRAGMA table_info(history)")}:
             self.db.execute("ALTER TABLE history ADD COLUMN mode TEXT NOT NULL DEFAULT ''")
             self.db.execute("UPDATE history SET mode=CASE WHEN provider='ECDICT' THEN 'dictionary' WHEN term='' THEN 'translate' ELSE 'history' END")
+        if "game" not in {row["name"] for row in self.db.execute("PRAGMA table_info(history)")}:
+            self.db.execute("ALTER TABLE history ADD COLUMN game TEXT NOT NULL DEFAULT ''")
         self.db.commit()
         self.notice = ""
 
@@ -88,10 +90,10 @@ class Store:
         temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         os.replace(temporary, self.path)
 
-    def add(self, term, context, answer, profile, mode="dictionary"):
-        result = self.db.execute("INSERT INTO history(term,context,answer,provider,model,created,mode) VALUES(?,?,?,?,?,?,?)",
+    def add(self, term, context, answer, profile, mode="dictionary", game=""):
+        result = self.db.execute("INSERT INTO history(term,context,answer,provider,model,created,mode,game) VALUES(?,?,?,?,?,?,?,?)",
                                  (term, context, answer, profile.name, profile.model,
-                                  datetime.now().astimezone().isoformat(timespec="seconds"), mode))
+                                  datetime.now().astimezone().isoformat(timespec="seconds"), mode, game))
         self.db.commit()
         return result.lastrowid
 

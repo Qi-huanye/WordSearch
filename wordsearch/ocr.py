@@ -2,6 +2,7 @@ import asyncio
 import math
 import re
 from dataclasses import dataclass
+from statistics import median
 
 from PIL import Image, ImageGrab, ImageOps
 
@@ -24,6 +25,72 @@ class Recognition:
     words: list
     region: tuple
     boxes: tuple = ()
+
+
+CHOICE_START = re.compile(r"^\s*(?:\d{1,2}|[Il])\s*[.)]\s*[-—–]?")
+SPEAKER_START = re.compile(r"^[A-Z][A-Z .’'\-]{2,60}\s+[—–-]\s*")
+
+
+def text_rows(lines):
+    """Join OCR fragments on the same physical row, including choice numbers."""
+    rows = []
+    for line in sorted(lines, key=lambda item: (item["top"], item["left"])):
+        target = None
+        for row in reversed(rows):
+            overlap = min(row["bottom"], line["bottom"]) - max(row["top"], line["top"])
+            height = min(row["bottom"] - row["top"], line["bottom"] - line["top"])
+            gap = max(row["left"] - line["right"], line["left"] - row["right"], 0)
+            if overlap >= height * .5 and gap <= height * 3.5:
+                target = row
+                break
+        if target is None:
+            rows.append(dict(line, words=list(line["words"]), ids={line["id"]}))
+        else:
+            target["words"].extend(line["words"])
+            target["ids"].add(line["id"])
+            for edge in ("left", "top"):
+                target[edge] = min(target[edge], line[edge])
+            for edge in ("right", "bottom"):
+                target[edge] = max(target[edge], line[edge])
+    for row in rows:
+        row["words"].sort(key=lambda word: word["x"])
+        row["text"] = " ".join(word["text"] for word in row["words"])
+    return sorted(rows, key=lambda row: (row["top"], row["left"]))
+
+
+def paragraphs(rows):
+    if not rows:
+        return []
+    height = median(row["bottom"] - row["top"] for row in rows)
+    blocks = []
+    for row in rows:
+        previous = blocks[-1][-1] if blocks else None
+        new_block = previous is None or CHOICE_START.match(row["text"]) or SPEAKER_START.match(row["text"])
+        if previous is not None:
+            overlap = min(row["right"], previous["right"]) - max(row["left"], previous["left"])
+            new_block = new_block or row["top"] - previous["bottom"] > height * .8 or overlap < 20
+        if new_block:
+            blocks.append([])
+        blocks[-1].append(row)
+    return blocks
+
+
+def selected_context(rows, selected_words, expand):
+    selected_ids = {word["line"] for word in selected_words}
+    if expand:
+        focus = next(row for row in rows if row["ids"] & selected_ids)
+        # The fixed capture area may contain several paragraphs or columns.
+        rows = [row for row in rows if row["ids"] & selected_ids or
+                min(row["right"], focus["right"]) - max(row["left"], focus["left"]) > 20]
+    selected_keys = {id(word) for word in selected_words}
+    texts = []
+    for block in paragraphs(rows):
+        if not any(row["ids"] & selected_ids for row in block):
+            continue
+        parts = [row["text"] if expand else " ".join(word["text"] for word in row["words"]
+                 if id(word) in selected_keys) for row in block]
+        texts.append(" ".join(part for part in parts if part))
+    return "\n\n".join(texts)
 
 
 def capture_near(pointer, settings):
@@ -103,23 +170,16 @@ async def _recognize(capture):
     writer.close()
     if not words:
         raise RuntimeError("没有识别到英文文字。请指向文字后重试，或使用框选；也可以手动输入。")
+    rows = text_rows(lines)
     if capture.pointer is None:
         sx, sy, sw, sh = capture.selection or (0, 0, *capture.image.size)
         selected_words = [w for w in words if sx <= w['x'] + w['w'] / 2 <= sx + sw
                           and sy <= w['y'] + w['h'] / 2 <= sy + sh]
         if not selected_words:
             raise RuntimeError("选框内没有识别到英文，请重新框选或手动输入。")
-        selected_ids = {w['line'] for w in selected_words}
-        selected_text = "\n".join(" ".join(w['text'] for w in selected_words if w['line'] == line_id)
-                                  for line_id in sorted(selected_ids))
-        term = selected_text if len(selected_words) <= 8 else ""
-        if term:
-            focus = next(line for line in lines if line['id'] == min(selected_ids))
-            relevant = lines if capture.fixed_context else [line for line in lines if abs(line['top'] - focus['top']) <= 280
-                        and min(line['right'], focus['right']) > max(line['left'], focus['left']) + 20]
-            context = "\n".join(line['text'] for line in relevant)
-        else:
-            context = selected_text
+        selected_text = selected_context(rows, selected_words, expand=False)
+        term = selected_text.strip(' \n.,!?;:\"“”()[]{}—–') if len(selected_words) <= 8 else ""
+        context = selected_context(rows, selected_words, expand=True) if term else selected_text
     else:
         px, py = capture.pointer
 
@@ -133,11 +193,7 @@ async def _recognize(capture):
         if distance(selected) > 55:
             raise RuntimeError("鼠标附近没有找到单词，请把鼠标移到字母上重试，或框选文字。")
         term = selected["text"].strip('.,!?;:\"“”()[]{}—–')
-        focus = next(line for line in lines if line["id"] == selected["line"])
-        # Column overlap excludes inventory labels on the left of the dialogue.
-        nearby = lines if capture.fixed_context else [line for line in lines if abs(line["top"] - focus["top"]) <= 280
-                  and min(line["right"], focus["right"]) > max(line["left"], focus["left"]) + 20]
-        context = "\n".join(line["text"] for line in nearby)
+        context = selected_context(rows, selected_words, expand=True)
     width, height = capture.image.size
     boxes = tuple((capture.origin[0] + w["x"], capture.origin[1] + w["y"], w["w"], w["h"])
                   for w in selected_words)

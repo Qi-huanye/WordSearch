@@ -499,7 +499,7 @@ class WordPopup(QWidget):
         self.ai_complete = complete
         if self.mode == "translate":
             self.translation_text = text
-            self.translation_body.setMarkdown(text)
+            self.translation_body.setPlainText(text)
             self.translation_body.show()
             self.resize_browser(self.translation_body, 35, 200)
         else:
@@ -515,7 +515,7 @@ class WordPopup(QWidget):
 
     def restore_translation(self, text):
         self.translation_text = text
-        self.translation_body.setMarkdown(text)
+        self.translation_body.setPlainText(text)
         self.translation_body.setVisible(bool(text))
         self.resize_browser(self.translation_body, 35, 200)
         self.position_card()
