@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+build/
+dist/
+*.zip
+run-output.log
+run-error.log
+*.log
+*.sqlite3
+*.building
+*-vocabulary.csv
+.env
+.env.*
+settings.json
+docs/live-validation.md
+docs/superpowers/
