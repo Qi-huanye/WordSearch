@@ -1,6 +1,7 @@
 """Take a current game frame with Windows cursor capture disabled."""
 
 import logging
+import sys
 import threading
 
 from PIL import Image, ImageGrab
@@ -12,7 +13,10 @@ def game_frame(box, window):
     from windows_capture import WindowsCapture
 
     bounds = window_capture_bounds(window)
-    capture = WindowsCapture(cursor_capture=False, window_hwnd=window)
+    # Border control is unavailable on older Windows 10 builds. Keep their
+    # cursor-free capture instead of failing over to an ordinary screenshot.
+    border = False if sys.getwindowsversion().build >= 20348 else None
+    capture = WindowsCapture(cursor_capture=False, draw_border=border, window_hwnd=window)
     finished = threading.Event()
     result = {}
 
@@ -43,7 +47,7 @@ def game_frame(box, window):
         if "image" not in result:
             raise RuntimeError("游戏窗口已关闭，无法截图。")
         control.wait()
-        logging.info("Game captured with WGC; cursor_capture=False")
+        logging.info("Game captured with WGC; cursor_capture=False draw_border=%s", border)
         return result["image"]
     finally:
         if not control.is_finished():

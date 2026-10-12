@@ -11,7 +11,7 @@ for dependency in ['PySide6-Essentials', 'shiboken6', 'Pillow', 'httpx', 'httpco
                    'windows-capture', 'numpy', 'opencv-python']:
     metadata += copy_metadata(dependency)
 a = Analysis(['main.py'], pathex=[], binaries=binaries,
-             datas=[('README.md', '.'), ('THIRD_PARTY_NOTICES.md', '.'),
+             datas=[('README.md', '.'), ('THIRD_PARTY_NOTICES.md', '.'), ('docs', 'docs'),
                     ('assets/dictionary', 'assets/dictionary')] + metadata,
              hiddenimports=hidden, hookspath=[], hooksconfig={}, runtime_hooks=[],
              excludes=['PySide6.QtQml', 'PySide6.QtQuick', 'PySide6.QtDesigner',
@@ -23,7 +23,6 @@ a.binaries = [entry for entry in a.binaries
               if entry[0].replace('\\', '/').split('/')[-1].lower() not in ('icuuc.dll', 'icuin.dll', 'icudt.dll')
               and not entry[0].replace('\\', '/').split('/')[-1].lower().startswith(('api-ms-win-', 'ext-ms-win-'))]
 pyz = PYZ(a.pure)
-exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name='WordSearch', debug=False,
+exe = EXE(pyz, a.scripts, a.binaries, a.datas, [], name='WordSearch', debug=False,
           bootloader_ignore_signals=False, strip=False, upx=False, console=False,
           disable_windowed_traceback=False, icon='assets/WordSearch.ico')
-coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name='WordSearch')

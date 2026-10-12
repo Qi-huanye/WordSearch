@@ -4,10 +4,11 @@ import re
 from PySide6.QtCore import QPoint, QPointF, QRectF, QSize, Qt, Signal, QTimer
 from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPainterPath, QPen, QPixmap, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (QApplication, QHBoxLayout,
-    QLabel, QLineEdit, QMenu, QPushButton, QSizePolicy, QTextBrowser, QToolButton, QVBoxLayout, QWidget)
+    QLabel, QLineEdit, QPushButton, QSizePolicy, QTextBrowser, QToolButton, QVBoxLayout, QWidget)
 
 from .native import monitor_at
-from .ui import app_icon
+from . import theme
+from .theme import app_icon, glyph_icon, icon_font, make_menu
 
 POPUP_STYLE = """
 QWidget#WordCard { background:transparent; border:0; }
@@ -18,13 +19,16 @@ QWidget#WordCard QLabel#PartOfSpeech { color:#d5d6d7; background:#303336; border
 QWidget#WordCard QPushButton, QWidget#WordCard QToolButton { background:transparent; border:0; border-radius:2px; color:#c6c8c9; padding:3px; }
 QWidget#WordCard QPushButton:hover, QWidget#WordCard QToolButton:hover { background:#35383b; color:#ffffff; }
 QWidget#WordCard QPushButton:disabled, QWidget#WordCard QToolButton:disabled { color:#73777a; }
-QWidget#WordCard QToolButton#Bookmark { padding:0; background:transparent; }
+QWidget#WordCard QPushButton#Favorite { border:1px solid #45494c; border-radius:13px; padding:3px 11px 3px 9px; color:#c6c8c9; font-size:13px; }
+QWidget#WordCard QPushButton#Favorite:hover { background:#35383b; color:#ffffff; }
+QWidget#WordCard QPushButton#Favorite:checked { color:#f0a35e; border-color:#6e5238; background:#352d27; }
 QWidget#WordCard QPushButton#SectionTitle { text-align:left; font-size:18px; padding:0; }
-QWidget#WordCard QPushButton#Explain { text-align:left; font-size:14px; padding:4px 5px; }
+QWidget#WordCard QPushButton#Explain { text-align:left; font-size:14px; padding:4px 0; }
+QWidget#WordCard QPushButton#Explain:hover { background:transparent; color:#ffffff; }
 QWidget#WordCard QPushButton#ContextToggle { background:#2b2e30; text-align:left; border-radius:3px; }
 QWidget#WordCard QPushButton#ContextToggle:hover { background:#323538; }
 QWidget#WordCard QTextBrowser { background:transparent; color:#f1f1f1; border:0; padding:0; }
-QWidget#WordCard QTextBrowser#Context { background:#303336; border:1px solid #292c2e; border-radius:3px; padding:12px; color:#c8ccce; }
+QWidget#WordCard QTextBrowser#Context { background:#303336; border:1px solid #292c2e; border-radius:3px; padding:12px 40px 12px 12px; color:#c8ccce; }
 QWidget#WordCard QLineEdit { background:#303336; border:1px solid #45494c; color:#eeeeee; padding:7px; font-size:15px; border-radius:3px; }
 QWidget#WordCard QFrame#Divider { background:#c0c2c3; border:0; min-height:1px; max-height:1px; }
 QWidget#WordCard QLabel#Status { color:#e0ba98; font-size:14px; }
@@ -60,16 +64,9 @@ def card_icon(name, active=False):
     picture.fill(Qt.GlobalColor.transparent)
     p = QPainter(picture)
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
-    color = QColor("#ff7659" if name == "bookmark" else ("#ffffff" if active else "#bfc2c4"))
+    color = QColor("#ffffff" if active else "#bfc2c4")
     p.setPen(QPen(color, 1.7, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
-    if name == "bookmark":
-        path = QPainterPath(QPointF(1, 0))
-        for x, y in [(31, 0), (31, 31), (25, 31), (16, 24), (7, 31), (1, 31), (1, 0)]:
-            path.lineTo(x, y)
-        if active:
-            p.setBrush(color)
-        p.drawPath(path)
-    elif name == "speaker":
+    if name == "speaker":
         path = QPainterPath(QPointF(5, 13))
         for x, y in [(11, 13), (17, 8), (17, 24), (11, 19), (5, 19), (5, 13)]:
             path.lineTo(x, y)
@@ -180,11 +177,6 @@ class WordPopup(QWidget):
         box = QVBoxLayout(self)
         box.setContentsMargins(32, 26, 32, 34)
         box.setSpacing(18)
-        self.favorite = self.icon_button("bookmark", "收藏当前单词", self.favorite_requested.emit, 26)
-        self.favorite.setCheckable(True)
-        self.favorite.setObjectName("Bookmark")
-        self.favorite.setFixedSize(26, 30)
-        self.favorite.move(self.width() - 53, 0)
         self.translation_section = QWidget()
         translation_layout = QVBoxLayout(self.translation_section)
         translation_layout.setContentsMargins(0, 0, 0, 0)
@@ -207,7 +199,9 @@ class WordPopup(QWidget):
         translation_indent.addWidget(self.translation_body)
         translation_layout.addLayout(translation_indent)
         box.addWidget(self.translation_section)
-        dictionary_head = QHBoxLayout()
+        self.dictionary_head = QWidget()
+        dictionary_head = QHBoxLayout(self.dictionary_head)
+        dictionary_head.setContentsMargins(0, 0, 0, 0)
         dictionary_head.setSpacing(8)
         self.dictionary_button = QPushButton("ECDICT")
         self.dictionary_button.setObjectName("SectionTitle")
@@ -217,7 +211,7 @@ class WordPopup(QWidget):
         self.ai_button = self.icon_button("sparkle", "解释当前单词", lambda: self.request_ai("lookup"))
         dictionary_head.addWidget(self.ai_button)
         dictionary_head.addWidget(self.divider(), 1)
-        box.addLayout(dictionary_head)
+        box.addWidget(self.dictionary_head)
         self.body = QWidget()
         body = QVBoxLayout(self.body)
         body.setContentsMargins(16, 0, 0, 0)
@@ -235,6 +229,14 @@ class WordPopup(QWidget):
         heading.addWidget(self.uk_audio)
         heading.addWidget(self.us_audio)
         heading.addStretch(1)
+        self.favorite = QPushButton("收藏")
+        self.favorite.setObjectName("Favorite")
+        self.favorite.setCheckable(True)
+        self.favorite.setIconSize(QSize(14, 14))
+        self.favorite.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.favorite.setAccessibleName("收藏单词")
+        self.favorite.clicked.connect(self.favorite_requested.emit)
+        heading.addWidget(self.favorite, 0, Qt.AlignmentFlag.AlignVCenter)
         body.addLayout(heading)
         metadata = QHBoxLayout()
         metadata.setSpacing(8)
@@ -260,7 +262,9 @@ class WordPopup(QWidget):
         body.addWidget(self.home_row)
         self.content = self.browser("词典释义")
         body.addWidget(self.content)
-        self.more_senses = QPushButton("更多释义 ⌄")
+        self.more_senses = QPushButton("更多释义")
+        self.more_senses.setIcon(glyph_icon(theme.CHEVRON_DOWN, "#c6c8c9", 10))
+        self.more_senses.setIconSize(QSize(16, 16))
         self.more_senses.setObjectName("Explain")
         self.more_senses.setMinimumHeight(30)
         self.more_senses.setCheckable(True)
@@ -280,7 +284,9 @@ class WordPopup(QWidget):
         self.context_button.setFixedHeight(44)
         context_heading = QHBoxLayout(self.context_button)
         context_heading.setContentsMargins(16, 0, 16, 0)
-        self.context_arrow = QLabel("⌄")
+        self.context_arrow = QLabel(theme.CHEVRON_DOWN)
+        self.context_arrow.setFont(icon_font(11))
+        self.context_arrow.setStyleSheet("font-family:'Segoe Fluent Icons','Segoe MDL2 Assets'; font-size:11px")
         self.context_arrow.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         context_heading.addStretch()
         context_heading.addWidget(self.context_arrow)
@@ -345,14 +351,13 @@ class WordPopup(QWidget):
         self.held = value
 
     def open_menu(self, point=None):
-        menu = QMenu(self)
-        for text, action in [("编辑原文", self.edit_requested.emit), ("生词本", self.history_requested.emit),
-                             ("设置", self.settings_requested.emit), ("本地词典", self.dictionary_requested.emit)]:
-            menu.addAction(text, action)
-        pin = menu.addAction("固定词卡")
-        pin.setCheckable(True)
-        pin.setChecked(self.held)
-        pin.toggled.connect(self.set_held)
+        menu = make_menu(self)
+        menu.addAction("修正原文", self.edit_requested.emit)
+        menu.addAction("取消固定" if self.held else "固定位置", lambda: self.set_held(not self.held))
+        menu.addSeparator()
+        menu.addAction("生词本", self.history_requested.emit)
+        menu.addAction("设置", self.settings_requested.emit)
+        menu.addSeparator()
         menu.addAction("收起", self.dismiss)
         menu.exec(point or self.mapToGlobal(QPoint(self.width() - 30, 30)))
 
@@ -361,8 +366,9 @@ class WordPopup(QWidget):
 
     def set_favorite(self, value):
         self.favorite.setChecked(value)
-        self.favorite.setIcon(card_icon("bookmark", value))
-        self.favorite.setToolTip("取消收藏" if value else "收藏当前单词")
+        self.favorite.setText("已收藏" if value else "收藏")
+        self.favorite.setIcon(glyph_icon(theme.STAR_FILLED if value else theme.STAR, "#f0a35e" if value else "#c6c8c9", 14))
+        self.favorite.setToolTip("点击取消收藏" if value else "加入生词本收藏")
 
     def set_mode(self, mode):
         self.mode = mode
@@ -384,6 +390,9 @@ class WordPopup(QWidget):
         self.source_start = -1
         self.translation_highlight = None
         self.word.setText("查词")
+        self.dictionary_button.setText("ECDICT")
+        self.dictionary_head.hide()
+        self.favorite.hide()
         self.home_row.show()
         self.translation_section.hide()
         self.phonetic.hide()
@@ -392,7 +401,6 @@ class WordPopup(QWidget):
                        self.content, self.explain_button, self.uk_audio, self.us_audio):
             widget.hide()
         self.ai_button.setEnabled(False)
-        self.favorite.setEnabled(False)
         self.dictionary_button.setEnabled(False)
         self.home_input.clear()
         self.set_status("")
@@ -409,6 +417,8 @@ class WordPopup(QWidget):
         self.followup_open = False
         self.translation_busy = False
         self.word.setText(self.term or "对白")
+        self.dictionary_head.show()
+        self.favorite.setVisible(bool(self.term.strip()))
         self.home_row.hide()
         self.content.show()
         self.uk_audio.setVisible(bool(self.term))
@@ -435,7 +445,6 @@ class WordPopup(QWidget):
         self.more_senses.blockSignals(True)
         self.more_senses.setChecked(False)
         self.more_senses.blockSignals(False)
-        self.favorite.setEnabled(bool(record_id))
         self.set_favorite(False)
         self.dictionary_button.setEnabled(True)
         self.ai_button.setEnabled(bool(self.term))
@@ -480,7 +489,8 @@ class WordPopup(QWidget):
                 parts.append("<p style='margin:0;color:#d0d2d3'>" + html.escape(english).replace("\n", "<br>") + "</p>")
         self.content.setHtml("".join(parts) or "未收录")
         self.more_senses.setVisible(needs_more or expanded)
-        self.more_senses.setText("收起释义 ⌃" if expanded else "更多释义 ⌄")
+        self.more_senses.setText("收起释义" if expanded else "更多释义")
+        self.more_senses.setIcon(glyph_icon(theme.CHEVRON_UP if expanded else theme.CHEVRON_DOWN, "#c6c8c9", 10))
         self.resize_browser(self.content, 35, 280 if expanded else 180)
         self.position_card()
 
@@ -489,9 +499,9 @@ class WordPopup(QWidget):
             self.show_dictionary()
 
     def expand_context(self, value):
-        self.context_arrow.setText("⌃" if value else "⌄")
+        self.context_arrow.setText(theme.CHEVRON_UP if value else theme.CHEVRON_DOWN)
         if value:
-            self.resize_browser(self.original, 80, 180, padding=44)
+            self.resize_browser(self.original, 80, 180, padding=44, width=self.width() - 136)
         self.original.setVisible(value and bool(self.context))
         self.adjustSize()
         self.position_card()
@@ -566,7 +576,7 @@ class WordPopup(QWidget):
         else:
             self.request_ai("lookup" if self.term else "translate")
 
-    def resize_browser(self, browser, minimum, maximum, padding=4):
+    def resize_browser(self, browser, minimum, maximum, padding=4, width=None):
         browser.ensurePolished()
         font = QFont("Segoe UI")
         font.setPixelSize(max(16, self.settings.font_size))
@@ -577,7 +587,7 @@ class WordPopup(QWidget):
         formatting.setFontFamilies(["Segoe UI", "Microsoft YaHei UI"])
         formatting.setFontPointSize(max(16, self.settings.font_size) * 0.75)
         cursor.mergeCharFormat(formatting)
-        browser.document().setTextWidth(self.width() - 84)
+        browser.document().setTextWidth(width or self.width() - 84)
         browser.setFixedHeight(max(minimum, min(maximum, int(browser.document().size().height()) + padding)))
         self.adjustSize()
 

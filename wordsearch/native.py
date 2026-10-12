@@ -29,6 +29,7 @@ user32.UnregisterHotKey.argtypes = [wintypes.HWND, ctypes.c_int]
 user32.SetWindowDisplayAffinity.argtypes = [wintypes.HWND, wintypes.DWORD]
 user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
 dwmapi.DwmGetWindowAttribute.argtypes = [wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD]
+dwmapi.DwmSetWindowAttribute.argtypes = [wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD]
 kernel32.LocalFree.argtypes = [wintypes.HLOCAL]
 kernel32.LocalFree.restype = wintypes.HLOCAL
 crypt32.CryptProtectData.argtypes = [ctypes.POINTER(Blob), wintypes.LPCWSTR, ctypes.c_void_p,
@@ -160,3 +161,11 @@ def parse_hotkey(text):
 
 def exclude_from_capture(widget):
     user32.SetWindowDisplayAffinity(int(widget.winId()), 0x11)
+
+
+def dark_title_bar(widget, color=0x221E1D):
+    """Ask DWM for a dark caption; Windows 11 also takes the caption colour (COLORREF)."""
+    hwnd = wintypes.HWND(int(widget.winId()))
+    for attribute, value in ((20, 1), (35, color)):
+        data = wintypes.DWORD(value)
+        dwmapi.DwmSetWindowAttribute(hwnd, attribute, ctypes.byref(data), ctypes.sizeof(data))

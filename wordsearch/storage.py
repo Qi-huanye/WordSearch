@@ -32,7 +32,6 @@ class Settings:
     font_size: int = 14
     auto_query: bool = False
     auto_translate: bool = True
-    hover_lookup: bool = True
     crop_width: int = 1100
     crop_height: int = 600
 
@@ -64,8 +63,9 @@ class Store:
             return Settings()
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
-            if "hover_lookup" not in data:
-                data["auto_query"] = False
+            # Older versions enabled lookup on hover. Only explicit lookup
+            # actions are supported now, regardless of the stored preference.
+            data.pop("hover_lookup", None)
             profiles = []
             for p in data.pop("profiles", []):
                 encrypted = p.pop("encrypted_key", "")
@@ -91,29 +91,51 @@ class Store:
         os.replace(temporary, self.path)
 
     def add(self, term, context, answer, profile, mode="dictionary", game=""):
-        result = self.db.execute("INSERT INTO history(term,context,answer,provider,model,created,mode,game) VALUES(?,?,?,?,?,?,?,?)",
+        # A new lookup of a saved word stays in the favourites.
+        favorite = bool(term) and self.db.execute(
+            "SELECT 1 FROM history WHERE term<>'' AND lower(term)=lower(?) AND favorite=1", (term,)).fetchone() is not None
+        result = self.db.execute("INSERT INTO history(term,context,answer,provider,model,created,mode,game,favorite) VALUES(?,?,?,?,?,?,?,?,?)",
                                  (term, context, answer, profile.name, profile.model,
-                                  datetime.now().astimezone().isoformat(timespec="seconds"), mode, game))
+                                  datetime.now().astimezone().isoformat(timespec="seconds"), mode, game, int(favorite)))
         self.db.commit()
         return result.lastrowid
 
-    def history(self, query="", only_favorites=False):
-        return self.db.execute("""SELECT * FROM history WHERE (term LIKE ? OR context LIKE ?)
-            AND (?=0 OR favorite=1) ORDER BY id DESC""",
+    def words(self, query="", only_favorites=False):
+        """The latest record of each looked-up word; paragraph translations are left out."""
+        return self.db.execute("""SELECT h.id, h.term, h.context, h.answer, h.provider, h.model, h.created, h.mode, h.game,
+            g.favorite AS favorite FROM history h JOIN (SELECT MAX(id) AS id, MAX(favorite) AS favorite
+            FROM history WHERE term<>'' GROUP BY lower(term)) g ON h.id=g.id
+            WHERE (h.term LIKE ? OR h.context LIKE ?) AND (?=0 OR g.favorite=1) ORDER BY h.id DESC""",
             (f"%{query}%", f"%{query}%", int(only_favorites))).fetchall()
 
     def record(self, record_id):
         return self.db.execute("SELECT * FROM history WHERE id=?", (record_id,)).fetchone()
 
     def favorite(self, record_id, value):
-        self.db.execute("UPDATE history SET favorite=? WHERE id=?", (int(value), record_id))
+        row = self.record(record_id)
+        if row and row["term"]:
+            self.db.execute("UPDATE history SET favorite=? WHERE lower(term)=lower(?)", (int(value), row["term"]))
+        else:
+            self.db.execute("UPDATE history SET favorite=? WHERE id=?", (int(value), record_id))
         self.db.commit()
 
-    def delete(self, record_id=None):
-        if record_id is None:
-            self.db.execute("DELETE FROM history")
-        else:
-            self.db.execute("DELETE FROM history WHERE id=?", (record_id,))
+    def is_favorite(self, term):
+        return bool(term.strip()) and self.db.execute(
+            "SELECT 1 FROM history WHERE term<>'' AND lower(term)=lower(?) AND favorite=1", (term.strip(),)).fetchone() is not None
+
+    def favorite_term(self, term, value):
+        """Mark every record of a word; returns how many records there were."""
+        changed = self.db.execute("UPDATE history SET favorite=? WHERE term<>'' AND lower(term)=lower(?)",
+                                  (int(value), term.strip())).rowcount
+        self.db.commit()
+        return changed
+
+    def delete_word(self, term):
+        self.db.execute("DELETE FROM history WHERE term<>'' AND lower(term)=lower(?)", (term,))
+        self.db.commit()
+
+    def delete(self):
+        self.db.execute("DELETE FROM history")
         self.db.commit()
 
     def export(self, path, rows):
